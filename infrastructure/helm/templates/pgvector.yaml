@@ -1,0 +1,106 @@
+{{- if .Values.pgvector.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "financial-ai-agent.fullname" . }}-pgvector
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: pgvector
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: pgvector
+  template:
+    metadata:
+      labels:
+        app: pgvector
+    spec:
+      # pgvector/pgvector is built on the official postgres image, which
+      # runs as a fixed non-root UID (999) and needs the mounted volume to
+      # already be owned by that UID. Without fsGroup, a freshly provisioned
+      # PVC can come up root-owned, and Postgres refuses to start against
+      # it -- a different failure mode than the probe-timing issue, but one
+      # that looks identical from the outside (container never becomes Ready).
+      securityContext:
+        fsGroup: 999
+      containers:
+        - name: pgvector
+          image: "{{ .Values.pgvector.image.repository }}:{{ .Values.pgvector.image.tag }}"
+          imagePullPolicy: {{ .Values.pgvector.image.pullPolicy }}
+          env:
+            - name: POSTGRES_USER
+              valueFrom: {secretKeyRef: {name: financial-ai-secrets, key: POSTGRES_USER}}
+            - name: POSTGRES_PASSWORD
+              valueFrom: {secretKeyRef: {name: financial-ai-secrets, key: POSTGRES_PASSWORD}}
+            - name: POSTGRES_DB
+              valueFrom: {secretKeyRef: {name: financial-ai-secrets, key: POSTGRES_DB}}
+          ports:
+            - containerPort: 5432
+          resources:
+            {{- toYaml .Values.pgvector.resources | nindent 12 }}
+          # startupProbe gives initdb (which can genuinely take 30-90s on a
+          # constrained minikube node, especially with no persistent volume
+          # forcing a fresh initdb on every restart) room to finish BEFORE
+          # readiness/liveness start counting failures. This is the actual
+          # fix for the restart death-spiral -- without this, liveness was
+          # killing Postgres mid-initialization, forcing another cold
+          # initdb, which never had time to finish either.
+          startupProbe:
+            exec:
+              command: ["pg_isready", "-U", {{ .Values.postgres.user | quote }}, "-d", {{ .Values.postgres.db | quote }}]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 24 # ~2 minutes of grace before liveness/readiness engage at all
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", {{ .Values.postgres.user | quote }}, "-d", {{ .Values.postgres.db | quote }}]
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", {{ .Values.postgres.user | quote }}, "-d", {{ .Values.postgres.db | quote }}]
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          {{- if .Values.pgvector.persistence.enabled }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          {{- end }}
+      {{- if .Values.pgvector.persistence.enabled }}
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "financial-ai-agent.fullname" . }}-pgvector-data
+      {{- end }}
+---
+{{- if .Values.pgvector.persistence.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "financial-ai-agent.fullname" . }}-pgvector-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  {{- if .Values.pgvector.persistence.storageClass }}
+  storageClassName: {{ .Values.pgvector.persistence.storageClass }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.pgvector.persistence.size }}
+---
+{{- end }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "financial-ai-agent.fullname" . }}-pgvector
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app: pgvector
+  ports:
+    - port: 5432
+      targetPort: 5432
+{{- end }}

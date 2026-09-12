@@ -1,0 +1,215 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: finai-postgres
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-finai}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-finai-dev-password-change-in-prod}
+      POSTGRES_DB: ${POSTGRES_DB:-financial_ai}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init:/docker-entrypoint-initdb.d:ro
+    networks:
+      - finai-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-finai} -d ${POSTGRES_DB:-financial_ai}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  redis:
+    image: redis:7-alpine
+    container_name: finai-redis
+    restart: always
+    command: redis-server --requirepass "${REDIS_PASSWORD:-}" --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - finai-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  app:
+    image: financial-ai-agent:latest
+    build:
+      context: ../..
+      dockerfile: infrastructure/docker/Dockerfile
+    container_name: finai-app
+    restart: always
+    # NOTE: this volume mount overlays the image's /app/src with your host's
+    # src/ folder -- great for live-reload during development, but it means
+    # you're running the image's *baked* venv/model-cache against whatever
+    # code is on disk right now, not what was in the image at build time.
+    # Remove this mount for a true "run the image as-built" test.
+    volumes:
+      - ../../src:/app/src
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=${POSTGRES_USER:-finai}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-finai-dev-password-change-in-prod}
+      - POSTGRES_DB=${POSTGRES_DB:-financial_ai}
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-finai}:${POSTGRES_PASSWORD:-finai-dev-password-change-in-prod}@postgres:5432/${POSTGRES_DB:-financial_ai}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      - REDIS_DB=${REDIS_DB:-0}
+      - API_KEY=${API_KEY:-}
+      - APP_ENV=${APP_ENV:-production}
+      - MOCK_EXTERNAL_APIS=${MOCK_EXTERNAL_APIS:-false}
+      - EMBEDDING_PROVIDER=${EMBEDDING_PROVIDER:-local}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-text-embedding-3-small}
+      - EMBEDDING_DIMENSIONS=${EMBEDDING_DIMENSIONS:-1536}
+      - EMBEDDING_BATCH_SIZE=${EMBEDDING_BATCH_SIZE:-100}
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+      - GROQ_BASE_URL=${GROQ_BASE_URL:-https://api.groq.com/openai/v1}
+      - LLM_PROVIDER=${LLM_PROVIDER:-local}
+      - LLM_BASE_URL=${LLM_BASE_URL:-}
+      - LLM_MODEL=${LLM_MODEL:-gpt-4o}
+      - LLM_TEMPERATURE=${LLM_TEMPERATURE:-0.0}
+      - LLM_MAX_TOKENS=${LLM_MAX_TOKENS:-2048}
+      # Must match the Dockerfile's baked-in cache path exactly. The previous
+      # value (/tmp/huggingface) pointed at an empty directory, which is why
+      # this only ever worked by silently re-downloading from the internet
+      # on every container start.
+      - HF_HOME=/app/.cache/huggingface
+      - TORCH_HOME=/app/.cache/torch
+      - OMP_NUM_THREADS=1
+      - TOKENIZERS_PARALLELISM=false
+    ports:
+      - "${APP_PORT:-8000}:8000"
+    networks:
+      - finai-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+networks:
+  finai-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+
+
+# services:
+#   postgres:
+#     image: pgvector/pgvector:pg16
+#     container_name: finai-postgres
+#     restart: always
+#     environment:
+#       POSTGRES_USER: ${POSTGRES_USER:-finai}
+#       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-finai-dev-password-change-in-prod}
+#       POSTGRES_DB: ${POSTGRES_DB:-financial_ai}
+#     ports:
+#       - "${POSTGRES_PORT:-5432}:5432"
+#     volumes:
+#       - postgres_data:/var/lib/postgresql/data
+#       - ./init:/docker-entrypoint-initdb.d:ro
+#     networks:
+#       - finai-network
+#     healthcheck:
+#       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-finai} -d ${POSTGRES_DB:-financial_ai}"]
+#       interval: 10s
+#       timeout: 5s
+#       retries: 5
+#       start_period: 30s
+
+#   redis:
+#     image: redis:7-alpine
+#     container_name: finai-redis
+#     restart: always
+#     command: redis-server --requirepass "${REDIS_PASSWORD:-}" --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+#     ports:
+#       - "${REDIS_PORT:-6379}:6379"
+#     volumes:
+#       - redis_data:/data
+#     networks:
+#       - finai-network
+#     healthcheck:
+#       test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-}", "ping"]
+#       interval: 10s
+#       timeout: 5s
+#       retries: 5
+#       start_period: 10s
+
+#   app:
+#     build:
+#       context: ../..
+#       dockerfile: infrastructure/docker/Dockerfile
+#     container_name: finai-app
+#     restart: always
+#     volumes:
+#       - ../../src:/app/src
+#     environment:
+#       - POSTGRES_HOST=postgres
+#       - POSTGRES_PORT=5432
+#       - POSTGRES_USER=${POSTGRES_USER:-finai}
+#       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-finai-dev-password-change-in-prod}
+#       - POSTGRES_DB=${POSTGRES_DB:-financial_ai}
+#       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-finai}:${POSTGRES_PASSWORD:-finai-dev-password-change-in-prod}@postgres:5432/${POSTGRES_DB:-financial_ai}
+#       - REDIS_HOST=redis
+#       - REDIS_PORT=6379
+#       - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+#       - REDIS_DB=${REDIS_DB:-0}
+#       - API_KEY=${API_KEY:-}
+#       - APP_ENV=${APP_ENV:-production}
+#       - MOCK_EXTERNAL_APIS=${MOCK_EXTERNAL_APIS:-false}
+#       - EMBEDDING_PROVIDER=${EMBEDDING_PROVIDER:-openai}
+#       - EMBEDDING_MODEL=${EMBEDDING_MODEL:-text-embedding-3-small}
+#       - EMBEDDING_DIMENSIONS=${EMBEDDING_DIMENSIONS:-1536}
+#       - EMBEDDING_BATCH_SIZE=${EMBEDDING_BATCH_SIZE:-100}
+#       - GROQ_API_KEY=${GROQ_API_KEY:-}
+#       - GROQ_BASE_URL=${GROQ_BASE_URL:-https://api.groq.com/openai/v1}
+#       - LLM_PROVIDER=${LLM_PROVIDER:-openai}
+#       - LLM_BASE_URL=${LLM_BASE_URL:-}
+#       - LLM_MODEL=${LLM_MODEL:-gpt-4o}
+#       - LLM_TEMPERATURE=${LLM_TEMPERATURE:-0.0}
+#       - LLM_MAX_TOKENS=${LLM_MAX_TOKENS:-2048}
+#       - HF_HOME=/tmp/huggingface
+#     ports:
+#       - "${APP_PORT:-8000}:8000"
+#     networks:
+#       - finai-network
+#     depends_on:
+#       postgres:
+#         condition: service_healthy
+#       redis:
+#         condition: service_healthy
+#     healthcheck:
+#       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+#       interval: 30s
+#       timeout: 10s
+#       retries: 3
+#       start_period: 40s
+
+# networks:
+#   finai-network:
+#     driver: bridge
+
+# volumes:
+#   postgres_data:
+#     driver: local
+#   redis_data:
+#     driver: local

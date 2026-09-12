@@ -1,0 +1,13 @@
+# .gitleaks.toml
+[allowlist]
+description = "Global allowlist for test and placeholder values"
+regexes = [
+    "test-pg-password-32-chars-minimum",
+    "test-redis-password",
+    "not-used-in-ci",
+    "REPLACE_ME",
+]
+paths = [
+    ".env.example",
+    "infrastructure/vault/vault-bootstrap.sh"
+]

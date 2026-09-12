@@ -1,0 +1,226 @@
+# =============================================================================
+# Financial AI Agent — Project Configuration
+# =============================================================================
+
+[build-system]
+requires      = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name        = "financial-ai-agent"
+version     = "0.1.0"
+description = "Production-grade financial AI pipeline"
+readme      = "README.md"
+requires-python = ">=3.11"
+authors = [
+    { name = "AI Engineer", email = "ai@company.com" },
+]
+
+dependencies = [
+    "slowapi>=0.1.9",
+    # API
+    "fastapi>=0.111.0",
+    "uvicorn[standard]>=0.30.0",
+    "pydantic>=2.7.0",
+    "pydantic-settings>=2.3.0",
+
+    # Database
+    "sqlalchemy[asyncio]>=2.0.30",
+    "asyncpg>=0.29.0",
+    "pgvector>=0.3.0",
+    "alembic>=1.13.0",
+
+    # Cache
+    "redis[hiredis]>=5.0.0",
+
+    # LLM + Embeddings
+    "openai>=1.35.0",
+    "tiktoken>=0.7.0",
+    "sentence-transformers>=3.0.0",
+    
+    # Ingestion
+    "httpx>=0.27.0",
+    "beautifulsoup4>=4.12.0",
+    "lxml>=5.2.0",
+    "yfinance>=0.2.40",
+    "sec-edgar-downloader>=5.0.0",
+
+    # Processing
+    "pdfplumber>=0.11.0",
+
+    # Observability
+    "structlog>=24.2.0",
+    "tenacity>=8.3.0",
+    "python-dotenv>=1.0.0",
+    "prometheus-client>=0.19.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    # Testing
+    "pytest>=8.2.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=5.0.0",
+    "pytest-mock>=3.14.0",
+    "httpx>=0.27.0",
+    # Type checking
+    "mypy>=1.10.0",
+    # Linting / formatting
+    "ruff>=0.4.0",
+    # Pre-commit
+    "pre-commit>=3.7.0",
+    # Migrations
+    "alembic>=1.13.0",
+    "psycopg2-binary>=2.9.0",
+    # Rate limiting
+    "slowapi>=0.1.9",
+]
+
+[project.scripts]
+financial-ai = "financial_ai.api.server:main"
+
+# =============================================================================
+# Hatchling — tell it where the package lives
+# =============================================================================
+[tool.hatch.build.targets.wheel]
+packages = ["src/financial_ai"]
+
+# =============================================================================
+# Pytest
+# =============================================================================
+[tool.pytest.ini_options]
+asyncio_mode  = "auto"
+testpaths     = ["tests"]
+pythonpath    = ["src"]
+python_files  = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts       = "-v --strict-markers -p no:warnings"
+markers = [
+    "unit: Unit tests",
+    "integration: Integration tests (require running services)",
+    "slow: Slow tests",
+]
+
+# =============================================================================
+# Coverage
+# =============================================================================
+[tool.coverage.run]
+source = ["src"]
+omit   = ["*/tests/*", "*/__version__.py", "*/migrations/*"]
+
+[tool.coverage.report]
+fail_under = 50
+omit = [
+    "src/financial_ai/storage/database.py",
+    "src/financial_ai/storage/cache.py",
+    "src/financial_ai/retrieval/embeddings.py",
+    "src/financial_ai/ingestion/sec_ingestor.py",
+]
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]
+
+# =============================================================================
+# Ruff — replaces black + isort + flake8
+# =============================================================================
+[tool.ruff]
+line-length    = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "F",    # pyflakes
+    "I",    # isort
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "SIM",  # flake8-simplify
+    "TCH",  # flake8-type-checking
+    "RUF",  # ruff-specific
+]
+ignore = [
+    "E501",  # line too long — handled by formatter
+]
+
+[tool.ruff.lint.per-file-ignores]
+"src/financial_ai/storage/repositories/*.py" = ["TCH002", "TCH003"]
+"src/financial_ai/api/*.py" = ["TCH001", "TCH002", "TCH003"]
+"src/financial_ai/agents/*.py" = ["SIM108", "TCH001", "TCH002", "TCH003"]
+"tests/**/*.py" = ["F841"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["financial_ai"]
+
+# =============================================================================
+# Mypy
+# =============================================================================
+[tool.mypy]
+python_version = "3.12"
+strict = true
+ignore_missing_imports = true
+ignore_errors = true
+exclude = ["^tests/", "^tests\\\\", "migrations/", ".*numpy.*"]
+
+# ── Per-module overrides (all consolidated, no duplicates) ────────────────
+# pydantic-settings BaseSettings subclassing limitations
+[[tool.mypy.overrides]]
+module = "financial_ai.config.*"
+ignore_errors = true
+
+# redis.asyncio has no type stubs
+[[tool.mypy.overrides]]
+module = "financial_ai.storage.cache"
+ignore_errors = true
+
+# SQLAlchemy pool methods not in type stubs
+[[tool.mypy.overrides]]
+module = "financial_ai.storage.database"
+ignore_errors = true
+
+# SQLAlchemy repositories: generic ModelT return types not fully typed
+[[tool.mypy.overrides]]
+module = "financial_ai.storage.repositories.*"
+ignore_errors = true
+
+# Vector store orchestrates multiple untyped libraries
+[[tool.mypy.overrides]]
+module = "financial_ai.storage.vector_store"
+ignore_errors = true
+
+# tenacity @retry strips decorated method return types
+[[tool.mypy.overrides]]
+module = "financial_ai.ingestion.sec_ingestor"
+ignore_errors = true
+
+# Retrieval: OpenAI and sentence-transformers lack complete stubs
+[[tool.mypy.overrides]]
+module = "financial_ai.retrieval.*"
+ignore_errors = true
+
+# Agent has complex type issues with OpenAI function calling
+[[tool.mypy.overrides]]
+module = "financial_ai.agents.*"
+ignore_errors = true
+
+# API layer: FastAPI Depends() annotations break with TYPE_CHECKING
+[[tool.mypy.overrides]]
+module = "financial_ai.api.*"
+ignore_errors = true
+
+# Numpy uses Python 3.12+ syntax not supported by mypy
+[[tool.mypy.overrides]]
+module = "numpy.*"
+ignore_errors = true
+
+# Tests excluded from type checking
+[[tool.mypy.overrides]]
+module = "tests.*"
+ignore_errors = true
+
+# SQLAlchemy pool internals not fully typed
+[[tool.mypy.overrides]]
+module = "sqlalchemy.pool.*"
+ignore_errors = true

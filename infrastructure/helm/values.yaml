@@ -1,0 +1,129 @@
+global:
+  environment: development
+  logLevel: info
+
+nameOverride: ""
+fullnameOverride: ""
+
+secrets:
+  useExternalSecrets: false
+  secretStore: vault-backend
+  vaultPath: financial-ai/config
+  refreshInterval: 15m
+
+postgres:
+  user: finai
+  password: "finai-dev-password-change-in-prod" # CHANGE for production
+  db: financial_ai
+  host: "" # empty = use the in-chart pgvector service name (computed below)
+  port: "5432"
+
+redisConfig:
+  password: "redis-dev-password-change-in-prod" # CHANGE for production
+  host: "" # empty = use the in-chart redis service name
+  port: "6379"
+  db: "0"
+
+# =============================================================================
+# API  (templates/api.yaml — Deployment + Service + HPA)
+# =============================================================================
+api:
+  enabled: true
+  replicaCount: 1
+  workers: 1
+
+  image:
+    repository: financial-ai-agent
+    tag: "latest"
+    pullPolicy: IfNotPresent
+
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: 2000m
+      memory: 3Gi
+
+  autoscaling:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 4
+    targetCPU: 70
+
+  # Baked into the image by the Dockerfile — model is saved to this exact
+  # flat path at build time, not to HF's nested hub/snapshots cache. See
+  # the Dockerfile comments if this ever needs to change; the two must
+  # always match.
+  modelCache:
+    hfHome: /app/.cache/huggingface
+    torchHome: /app/.cache/torch
+
+# =============================================================================
+# Background agent  (templates/api.yaml also renders this Deployment,
+# guarded by agent.enabled, since it shares the same image/model cache)
+# =============================================================================
+agent:
+  enabled: false
+  replicaCount: 1
+  concurrency: 4
+
+  image:
+    repository: financial-ai-agent
+    tag: "latest"
+    pullPolicy: IfNotPresent
+
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: 2000m
+      memory: 2Gi
+
+# =============================================================================
+# PGVector  (templates/pgvector.yaml — Deployment + Service)
+# =============================================================================
+pgvector:
+  enabled: true
+  image:
+    repository: pgvector/pgvector
+    tag: pg16
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+  persistence:
+    # Enabled by default now: without this, every pod restart forces a
+    # fresh `initdb` from empty, which is slow enough on constrained nodes
+    # (minikube included) to fight with the liveness probe forever. minikube
+    # ships a default StorageClass ("standard"), so leaving storageClass
+    # empty works out of the box there too, not just on EKS.
+    enabled: true
+    size: 20Gi
+    storageClass: "" # empty = cluster default
+
+# =============================================================================
+# Redis  (templates/redis.yaml — Deployment + Service)
+# =============================================================================
+redis:
+  enabled: true
+  image:
+    repository: redis
+    tag: 7-alpine
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  persistence:
+    enabled: false
+    size: 5Gi
+    storageClass: ""

@@ -1,0 +1,282 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: financial-ai
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: financial-ai-secrets
+  namespace: financial-ai
+type: Opaque
+stringData:
+  POSTGRES_USER: finai
+  POSTGRES_PASSWORD: finai-dev-password-change-in-prod
+  POSTGRES_DB: financial_ai
+  REDIS_PASSWORD: redis-dev-password-change-in-prod
+  DATABASE_URL: "postgresql+asyncpg://finai:finai-dev-password-change-in-prod@postgres:5432/financial_ai"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: financial-ai
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: pgvector/pgvector:pg16
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                {
+                  secretKeyRef:
+                    { name: financial-ai-secrets, key: POSTGRES_USER },
+                }
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                {
+                  secretKeyRef:
+                    { name: financial-ai-secrets, key: POSTGRES_PASSWORD },
+                }
+            - name: POSTGRES_DB
+              valueFrom:
+                {
+                  secretKeyRef:
+                    { name: financial-ai-secrets, key: POSTGRES_DB },
+                }
+          ports:
+            - containerPort: 5432
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "finai", "-d", "financial_ai"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "finai", "-d", "financial_ai"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: financial-ai
+spec:
+  selector:
+    app: postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: financial-ai
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          imagePullPolicy: IfNotPresent
+          command: ["redis-server"]
+          args: ["--requirepass", "$(REDIS_PASSWORD)"]
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                {
+                  secretKeyRef:
+                    { name: financial-ai-secrets, key: REDIS_PASSWORD },
+                }
+          ports:
+            - containerPort: 6379
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "redis-cli -a $REDIS_PASSWORD ping"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: financial-ai
+spec:
+  selector:
+    app: redis
+  ports:
+    - port: 6379
+      targetPort: 6379
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: financial-ai
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: api
+  template:
+    metadata:
+      labels:
+        app: api
+    spec:
+      enableServiceLinks: false
+      initContainers:
+        - name: wait-for-dependencies
+          image: postgres:16-alpine
+          imagePullPolicy: IfNotPresent
+          command:
+            - "sh"
+            - "-c"
+            - |
+              echo "Waiting for PostgreSQL..."
+              until pg_isready -h postgres -p 5432 -U finai; do
+                sleep 2
+              done
+              echo "PostgreSQL is up and running!"
+      containers:
+        - name: api
+          image: financial-ai-agent:latest
+          imagePullPolicy: IfNotPresent
+          command: ["uvicorn"]
+          args:
+            - "financial_ai.api.server:app"
+            - "--host"
+            - "0.0.0.0"
+            - "--port"
+            - "8000"
+            - "--workers"
+            - "1"
+          ports:
+            - containerPort: 8000
+          env:
+            # Must match the Dockerfile's baked-in cache path exactly --
+            # this is the fix for the original crash-loop. Getting this out
+            # of sync with the image is the single most likely way this
+            # breaks again in the future.
+            - name: HF_HOME
+              value: "/app/.cache/huggingface"
+            - name: TORCH_HOME
+              value: "/app/.cache/torch"
+            - name: OMP_NUM_THREADS
+              value: "1"
+            - name: TOKENIZERS_PARALLELISM
+              value: "false"
+            - name: DATABASE_URL
+              valueFrom:
+                {
+                  secretKeyRef:
+                    { name: financial-ai-secrets, key: DATABASE_URL },
+                }
+            - name: POSTGRES_HOST
+              value: postgres
+            - name: POSTGRES_PORT
+              value: "5432"
+            - name: POSTGRES_USER
+              valueFrom:
+                {
+                  secretKeyRef:
+                    { name: financial-ai-secrets, key: POSTGRES_USER },
+                }
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                {
+                  secretKeyRef:
+                    { name: financial-ai-secrets, key: POSTGRES_PASSWORD },
+                }
+            - name: POSTGRES_DB
+              valueFrom:
+                {
+                  secretKeyRef:
+                    { name: financial-ai-secrets, key: POSTGRES_DB },
+                }
+            - name: REDIS_HOST
+              value: redis
+            - name: REDIS_PORT
+              value: "6379"
+            - name: REDIS_PASSWORD
+              valueFrom:
+                {
+                  secretKeyRef:
+                    { name: financial-ai-secrets, key: REDIS_PASSWORD },
+                }
+            - name: REDIS_DB
+              value: "0"
+            - name: APP_ENV
+              value: development
+            - name: LLM_PROVIDER
+              value: local
+            - name: EMBEDDING_PROVIDER
+              value: local
+          resources:
+            requests:
+              memory: "1Gi"
+              cpu: "500m"
+            limits:
+              memory: "6Gi"
+              cpu: "2"
+          # startupProbe gives slow model-loading time to finish before
+          # readiness/liveness start counting failures -- this is what
+          # prevents the pod from being killed mid-startup, and what
+          # prevents `kubectl get pods` from falsely showing 1/1 while the
+          # app is still crash-looping underneath.
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 15
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api
+  namespace: financial-ai
+spec:
+  selector:
+    app: api
+  ports:
+    - port: 8000
+      targetPort: 8000
+  # ClusterIP (default). Reach it locally with:
+  #   kubectl port-forward -n financial-ai svc/api 8000:8000
+  # NodePort was the original source of the "curl gets stuck" confusion --
+  # it maps to a random high port, not localhost:8000. port-forward always
+  # works regardless of cluster networking setup.

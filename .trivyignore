@@ -1,0 +1,22 @@
+
+# Perl vulnerabilities - we don't use Perl in production
+CVE-2026-42496
+CVE-2026-8376
+CVE-2026-42497
+CVE-2026-48959
+CVE-2026-48962
+CVE-2026-9538
+
+# Python package vulnerabilities - will be updated
+CVE-2026-23949  # jaraco.context
+CVE-2026-24049  # wheel
+
+# ncurses vulnerabilities - not exploitable in container
+CVE-2025-69720
+
+# SQLite vulnerabilities - not using SQLite
+CVE-2026-11822
+CVE-2026-11824
+
+# libssh2 vulnerabilities - not using SSH
+CVE-2026-7598

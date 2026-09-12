@@ -1,0 +1,15 @@
+aayostem@DESKTOP-8D6T58L MINGW64 ~/Desktop/financial-ai-agent (main)
+$ cd ~/Desktop/financial-ai-agent
+docker compose -f infrastructure/docker/docker-compose.dev.yml --env-file .env up -d
+sleep 30
+echo "=== Health ==="
+curl -s http://localhost:8000/health | python -m json.tool
+echo "=== Root ==="
+curl -s http://localhost:8000/ | python -m json.tool
+echo "=== Query ==="
+curl -s -X POST http://localhost:8000/query -H "Content-Type: application/json" -d '{"question": "What is financial AI?"}' | python -m json.tool
+echo "=== Stats ==="
+curl -s http://localhost:8000/stats/AAPL | python -m json.tool
+echo "=== Metrics ==="
+curl -s http://localhost:8000/metrics | grep "finrag" | head -5
+echo "=== All tests completed ==="

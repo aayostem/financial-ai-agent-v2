@@ -1,0 +1,8 @@
+# backend.hcl.example
+# Copy to backend.hcl (gitignored), fill in the values from state-backend's
+# outputs, then: terraform init -backend-config=backend.hcl
+
+bucket         = "financial-ai-terraform-state"
+key            = "financial-ai/terraform.tfstate"
+region         = "us-east-1"
+dynamodb_table = "financial-ai-terraform-lock"

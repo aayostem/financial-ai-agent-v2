@@ -1,0 +1,212 @@
+{{- if .Values.api.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "financial-ai-agent.fullname" . }}-api
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: api
+spec:
+  replicas: {{ .Values.api.replicaCount }}
+  selector:
+    matchLabels:
+      app: api
+  template:
+    metadata:
+      labels:
+        app: api
+    spec:
+      initContainers:
+        {{- if .Values.pgvector.enabled }}
+        - name: wait-for-postgres
+          image: "{{ .Values.pgvector.image.repository }}:{{ .Values.pgvector.image.tag }}"
+          imagePullPolicy: IfNotPresent
+          command:
+            - "sh"
+            - "-c"
+            - |
+              echo "Waiting for PostgreSQL..."
+              until pg_isready -h {{ include "financial-ai-agent.postgresHost" . }} -p {{ .Values.postgres.port }} -U {{ .Values.postgres.user }}; do
+                sleep 2
+              done
+              echo "PostgreSQL is up."
+        {{- end }}
+        {{- if .Values.redis.enabled }}
+        # `nc -z` (a raw TCP connect check) only proves the port accepted a
+        # connection -- it does NOT prove Redis finished starting or that
+        # the password auth on top of that connection actually works. A
+        # real PING through redis-cli is the equivalent of pg_isready above:
+        # it checks the protocol, not just the socket.
+        - name: wait-for-redis
+          image: "{{ .Values.redis.image.repository }}:{{ .Values.redis.image.tag }}"
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom: {secretKeyRef: {name: financial-ai-secrets, key: REDIS_PASSWORD}}
+          command:
+            - "sh"
+            - "-c"
+            - |
+              echo "Waiting for Redis..."
+              until redis-cli -h {{ include "financial-ai-agent.redisHost" . }} -p {{ .Values.redisConfig.port }} --no-auth-warning -a "$REDIS_PASSWORD" ping | grep -q PONG; do
+                sleep 2
+              done
+              echo "Redis is up."
+        {{- end }}
+      containers:
+        - name: api
+          image: "{{ .Values.api.image.repository }}:{{ .Values.api.image.tag }}"
+          imagePullPolicy: {{ .Values.api.image.pullPolicy }}
+          command: ["uvicorn"]
+          args:
+            - "financial_ai.api.server:app"
+            - "--host"
+            - "0.0.0.0"
+            - "--port"
+            - "8000"
+            - "--workers"
+            - {{ .Values.api.workers | quote }}
+          ports:
+            - containerPort: 8000
+          env:
+            # Must match what the Dockerfile actually baked in at build
+            # time -- see values.yaml's api.modelCache comment. Getting
+            # this out of sync with the image is the single most likely
+            # way this regresses.
+            - name: HF_HOME
+              value: {{ .Values.api.modelCache.hfHome | quote }}
+            - name: TORCH_HOME
+              value: {{ .Values.api.modelCache.torchHome | quote }}
+            - name: HF_HUB_OFFLINE
+              value: "1"
+            - name: TRANSFORMERS_OFFLINE
+              value: "1"
+            - name: OMP_NUM_THREADS
+              value: "1"
+            - name: TOKENIZERS_PARALLELISM
+              value: "false"
+            - name: DATABASE_URL
+              valueFrom: {secretKeyRef: {name: financial-ai-secrets, key: DATABASE_URL}}
+            - name: POSTGRES_HOST
+              valueFrom: {secretKeyRef: {name: financial-ai-secrets, key: POSTGRES_HOST}}
+            - name: POSTGRES_PORT
+              valueFrom: {secretKeyRef: {name: financial-ai-secrets, key: POSTGRES_PORT}}
+            - name: POSTGRES_USER
+              valueFrom: {secretKeyRef: {name: financial-ai-secrets, key: POSTGRES_USER}}
+            - name: POSTGRES_PASSWORD
+              valueFrom: {secretKeyRef: {name: financial-ai-secrets, key: POSTGRES_PASSWORD}}
+            - name: POSTGRES_DB
+              valueFrom: {secretKeyRef: {name: financial-ai-secrets, key: POSTGRES_DB}}
+            - name: REDIS_HOST
+              valueFrom: {secretKeyRef: {name: financial-ai-secrets, key: REDIS_HOST}}
+            - name: REDIS_PORT
+              valueFrom: {secretKeyRef: {name: financial-ai-secrets, key: REDIS_PORT}}
+            - name: REDIS_PASSWORD
+              valueFrom: {secretKeyRef: {name: financial-ai-secrets, key: REDIS_PASSWORD}}
+            - name: REDIS_DB
+              valueFrom: {secretKeyRef: {name: financial-ai-secrets, key: REDIS_DB}}
+            - name: APP_ENV
+              value: {{ .Values.global.environment | quote }}
+            - name: LLM_PROVIDER
+              value: "local"
+            - name: EMBEDDING_PROVIDER
+              value: "local"
+          resources:
+            {{- toYaml .Values.api.resources | nindent 12 }}
+          startupProbe:
+            httpGet: {path: /health, port: 8000}
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            httpGet: {path: /health, port: 8000}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet: {path: /health, port: 8000}
+            initialDelaySeconds: 15
+            periodSeconds: 15
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "financial-ai-agent.fullname" . }}-api
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app: api
+  ports:
+    - port: 8000
+      targetPort: 8000
+{{- if .Values.api.autoscaling.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "financial-ai-agent.fullname" . }}-api
+  namespace: {{ .Release.Namespace }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "financial-ai-agent.fullname" . }}-api
+  minReplicas: {{ .Values.api.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.api.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.api.autoscaling.targetCPU }}
+{{- end }}
+{{- end }}
+---
+{{- if .Values.agent.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "financial-ai-agent.fullname" . }}-agent
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: agent
+spec:
+  replicas: {{ .Values.agent.replicaCount }}
+  selector:
+    matchLabels:
+      app: agent
+  template:
+    metadata:
+      labels:
+        app: agent
+    spec:
+      containers:
+        - name: agent
+          image: "{{ .Values.agent.image.repository }}:{{ .Values.agent.image.tag }}"
+          imagePullPolicy: {{ .Values.agent.image.pullPolicy }}
+          # Same image, no HTTP server -- runs the background/ingestion
+          # workload. Adjust the command to whatever your agent entrypoint
+          # actually is; this is a placeholder until you confirm it.
+          command: ["python", "-m", "financial_ai.agent.worker"]
+          env:
+            - name: HF_HOME
+              value: {{ .Values.api.modelCache.hfHome | quote }}
+            - name: TORCH_HOME
+              value: {{ .Values.api.modelCache.torchHome | quote }}
+            - name: HF_HUB_OFFLINE
+              value: "1"
+            - name: TRANSFORMERS_OFFLINE
+              value: "1"
+            - name: DATABASE_URL
+              valueFrom: {secretKeyRef: {name: financial-ai-secrets, key: DATABASE_URL}}
+            - name: REDIS_HOST
+              valueFrom: {secretKeyRef: {name: financial-ai-secrets, key: REDIS_HOST}}
+            - name: REDIS_PASSWORD
+              valueFrom: {secretKeyRef: {name: financial-ai-secrets, key: REDIS_PASSWORD}}
+            - name: AGENT_CONCURRENCY
+              value: {{ .Values.agent.concurrency | quote }}
+          resources:
+            {{- toYaml .Values.agent.resources | nindent 12 }}
+{{- end }}
